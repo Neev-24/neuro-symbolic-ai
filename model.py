@@ -18,7 +18,7 @@ print(f"Using device: {device}")
 
 SEED = 42
 BATCH_SIZE = 16
-NUM_WORKERS = 16
+NUM_WORKERS = 6
 LEARNING_RATE = 1e-4
 EPOCHS = 15
 
