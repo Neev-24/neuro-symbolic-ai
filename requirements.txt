@@ -1,0 +1,14 @@
+# Foundational Data Analysis and Machine Learning
+numpy==1.26.4
+pandas==2.2.2
+scikit-learn==1.5.0
+
+# Computer Vision and Image Processing Backend
+Pillow==10.3.0
+
+# Deep Learning Framework Core Tensors
+# Note: Ensure torch and torchvision are installed with the matching CUDA platform wheel indices
+typing-extensions==4.12.2
+
+# Neuro-Symbolic Logic Modeling Framework
+LTNtorch==1.0.2
