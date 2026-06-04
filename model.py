@@ -9,11 +9,24 @@ from torchvision import models, transforms
 from PIL import Image
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score
 import ltn 
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+SEED = 42
+BATCH_SIZE = 16
+NUM_WORKERS = 16
+LEARNING_RATE = 1e-4
+EPOCHS = 15
+
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
 # ==========================================
 # 1. DATA PREPROCESSING & DATASET
@@ -165,7 +178,10 @@ def train_neural_baseline(model, dataloader, epochs=5):
 
 def train_ltn_model(model, dataloader, epochs=5):
 
-    # Predicate measuring prediction accuracy
+    # ==========================================================
+    # PREDICATES
+    # ==========================================================
+
     def biomass_match(images, tabular, targets):
         preds = model(images, tabular)
 
@@ -197,6 +213,10 @@ def train_ltn_model(model, dataloader, epochs=5):
         )
     )
 
+    # ==========================================================
+    # FUZZY OPERATORS
+    # ==========================================================
+
     And = ltn.Connective(
         ltn.fuzzy_ops.AndProd()
     )
@@ -210,14 +230,28 @@ def train_ltn_model(model, dataloader, epochs=5):
         quantifier="f"
     )
 
+    # ==========================================================
+    # OPTIMIZER & LOSSES
+    # ==========================================================
+
     optimizer = optim.Adam(
         model.parameters(),
         lr=1e-4
     )
 
-    print("\n--- Starting Official Neuro-Symbolic LTN Training ---")
+    mse_criterion = nn.MSELoss()
+
+    huber_criterion = nn.HuberLoss(
+        delta=0.1
+    )
+
+    print("\n--- Starting Neuro-Symbolic LTN Training ---")
 
     model.train()
+
+    # ==========================================================
+    # TRAINING LOOP
+    # ==========================================================
 
     for epoch in range(epochs):
 
@@ -231,9 +265,18 @@ def train_ltn_model(model, dataloader, epochs=5):
 
             optimizer.zero_grad()
 
-            # --------------------------------------------------
+            # ==================================================
+            # FORWARD PASS
+            # ==================================================
+
+            pred_tensor = model(
+                images,
+                tabular
+            )
+
+            # ==================================================
             # LTN VARIABLES
-            # --------------------------------------------------
+            # ==================================================
 
             x_img = ltn.Variable(
                 "img",
@@ -250,31 +293,15 @@ def train_ltn_model(model, dataloader, epochs=5):
                 targets
             )
 
-            # pair sample i with target i
             x_img, x_tab, y_true = ltn.diag(
                 x_img,
                 x_tab,
                 y_true
             )
 
-            # --------------------------------------------------
-            # Neural predictions
-            # --------------------------------------------------
-
-            pred_tensor = model(
-                images,
-                tabular
-            )
-
-            pred_clover = ltn.Variable(
-                "clover",
-                pred_tensor[:, 0:1]
-            )
-
-            pred_dead = ltn.Variable(
-                "dead",
-                pred_tensor[:, 1:2]
-            )
+            # ==================================================
+            # PREDICTION VARIABLES
+            # ==================================================
 
             pred_green = ltn.Variable(
                 "green",
@@ -291,29 +318,8 @@ def train_ltn_model(model, dataloader, epochs=5):
                 pred_tensor[:, 4:5]
             )
 
-            ndvi = ltn.Variable(
-                "ndvi",
-                tabular[:, 0:1]
-            )
-
-            height = ltn.Variable(
-                "height",
-                tabular[:, 1:2]
-            )
-
-            ndvi, height, pred_total = ltn.diag(
-                ndvi,
-                height,
-                pred_total
-            )
-
             pred_green, pred_total = ltn.diag(
                 pred_green,
-                pred_total
-            )
-
-            pred_dead, pred_total = ltn.diag(
-                pred_dead,
                 pred_total
             )
 
@@ -322,10 +328,12 @@ def train_ltn_model(model, dataloader, epochs=5):
                 pred_green
             )
 
-            # --------------------------------------------------
-            # RULE 1
-            # Prediction should match labels
-            # --------------------------------------------------
+            # ==================================================
+            # LOGICAL RULES
+            # ==================================================
+
+            # Rule 1:
+            # Predictions should match the ground-truth labels
 
             rule_accuracy = Forall(
                 [x_img, x_tab, y_true],
@@ -336,36 +344,8 @@ def train_ltn_model(model, dataloader, epochs=5):
                 )
             )
 
-            # --------------------------------------------------
-            # RULE 2
-            # High NDVI and High Height
-            # => High Total Biomass
-            # --------------------------------------------------
-
-            # rule_biomass_growth = Forall(
-            #     [ndvi, height, pred_total],
-            #     Implies(
-            #         And(
-            #             FuzzyHigh(ndvi),
-            #             FuzzyHigh(height)
-            #         ),
-            #         FuzzyHigh(pred_total)
-            #     )
-            # )
-
-            # --------------------------------------------------
-            # RULE 3
-            # High Green Biomass
-            # => High Total Biomass
-            # --------------------------------------------------
-
-            # rule_total_consistency = Forall(
-            #     [pred_green, pred_total],
-            #     Implies(
-            #         FuzzyHigh(pred_green),
-            #         FuzzyHigh(pred_total)
-            #     )
-            # )
+            # Rule 2:
+            # Dry Green Biomass <= Dry Total Biomass
 
             rule_green_total = Forall(
                 [pred_green, pred_total],
@@ -375,13 +355,8 @@ def train_ltn_model(model, dataloader, epochs=5):
                 )
             )
 
-            # rule_dead_total = Forall(
-            #     [pred_dead, pred_total],
-            #     LessEqual(
-            #         pred_dead,
-            #         pred_total
-            #     )
-            # )
+            # Rule 3:
+            # GDM ≈ Dry Green Biomass
 
             rule_gdm_green = Forall(
                 [pred_gdm, pred_green],
@@ -391,45 +366,55 @@ def train_ltn_model(model, dataloader, epochs=5):
                 )
             )
 
-            # --------------------------------------------------
-            # KNOWLEDGE BASE
-            # --------------------------------------------------
-
-            # satisfaction = (
-            #     0.70 * rule_accuracy.value +
-            #     0.05 * rule_biomass_growth.value +
-            #     0.05 * rule_total_consistency.value +
-            #     0.05 * rule_green_total.value +
-            #     0.05 * rule_dead_total.value +
-            #     0.10 * rule_gdm_green.value
-            # )
+            # ==================================================
+            # KNOWLEDGE BASE SATISFACTION
+            # ==================================================
 
             satisfaction = (
                 0.80 * rule_accuracy.value +
-                0.10 * rule_gdm_green.value +
-                0.10 * rule_green_total.value
+                0.10 * rule_green_total.value +
+                0.10 * rule_gdm_green.value
             )
 
-            mse_loss = nn.MSELoss()(
+            # ==================================================
+            # LOSS COMPUTATION
+            # ==================================================
+
+            mse_loss = mse_criterion(
                 pred_tensor,
                 targets
             )
 
-            data_loss = nn.HuberLoss(delta=0.1)(
+            huber_loss = huber_criterion(
                 pred_tensor,
                 targets
             )
 
-            logic_loss = data_loss + 0.2 * (1 - satisfaction)
+            logic_penalty = (
+                1.0 - satisfaction
+            )
 
-            loss = mse_loss + 0.2 * logic_loss
+            logic_loss = (
+                huber_loss +
+                0.2 * logic_penalty
+            )
+
+            loss = (
+                mse_loss +
+                0.2 * logic_loss
+            )
+
+            # ==================================================
+            # BACKPROPAGATION
+            # ==================================================
 
             loss.backward()
 
             optimizer.step()
 
             total_loss += (
-                loss.item() * images.size(0)
+                loss.item() *
+                images.size(0)
             )
 
         epoch_loss = (
@@ -438,13 +423,11 @@ def train_ltn_model(model, dataloader, epochs=5):
         )
 
         print(
-            f"Epoch {epoch+1}/{epochs} | "
-            f"Global Satisfaction Loss: {epoch_loss:.4f}"
+            f"Epoch {epoch + 1}/{epochs} | "
+            f"Loss: {epoch_loss:.4f}"
         )
 
     return model
-
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 def evaluate_model(model, dataloader, target_cols, target_scaler):
     model.eval()
@@ -470,10 +453,6 @@ def evaluate_model(model, dataloader, target_cols, target_scaler):
     all_preds_original = target_scaler.inverse_transform(all_preds)
     all_targets_original = target_scaler.inverse_transform(all_targets)
 
-    print("\n" + "="*80)
-    print("EVALUATION RESULTS")
-    print("="*80)
-
     metrics = {}
 
     for i, target_name in enumerate(target_cols):
@@ -482,19 +461,12 @@ def evaluate_model(model, dataloader, target_cols, target_scaler):
         y_pred = all_preds_original[:, i]
 
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        mae = mean_absolute_error(y_true, y_pred)
         r2 = r2_score(y_true, y_pred)
 
         metrics[target_name] = {
             "RMSE": rmse,
-            "MAE": mae,
             "R2": r2
         }
-
-        print(f"\nTarget: {target_name}")
-        print(f"RMSE : {rmse:.4f}")
-        print(f"MAE  : {mae:.4f}")
-        print(f"R²   : {r2:.4f}")
 
     return metrics
 
@@ -517,53 +489,46 @@ if __name__ == "__main__":
     train_df, val_df = train_test_split(df, test_size=0.2, random_state=42)
     
     train_dataset = MultiModalPastureDataset(train_df, feature_cols, target_cols, img_dir, transform=img_transforms)
+    val_dataset = MultiModalPastureDataset(val_df, feature_cols, target_cols, img_dir, transform=img_transforms)
+
     train_loader = DataLoader(
         train_dataset,
-        batch_size=16,
+        batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=6,
-        pin_memory=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
         persistent_workers=True
-    )
-
-    val_dataset = MultiModalPastureDataset(
-        val_df,
-        feature_cols,
-        target_cols,
-        img_dir,
-        transform=img_transforms
     )
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=16,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=NUM_WORKERS,
+        pin_memory=torch.cuda.is_available(),
         persistent_workers=True
     )
-    epoch = 15
     # Initialize Neural Baseline Model
     neural_model = MultiModalFusionModel(num_tabular_features=len(feature_cols), num_targets=len(target_cols)).to(device)
-    trained_neural_net = train_neural_baseline(neural_model, train_loader, epochs=epoch)
+    trained_neural_net = train_neural_baseline(neural_model, train_loader, epochs=EPOCHS)
 
     # Initialize separate instance for Neuro-Symbolic LTN Model
     ltn_model = MultiModalFusionModel(num_tabular_features=len(feature_cols), num_targets=len(target_cols)).to(device)
-    sample_images, sample_tabular, sample_targets = next(iter(train_loader))
-
-    sample_images = sample_images.to(device)
-    sample_tabular = sample_tabular.to(device)
-
-    with torch.no_grad():
-        out = ltn_model(
-            sample_images,
-            sample_tabular
-        )
-
-    print("Model output shape:", out.shape)
-    trained_ltn_net = train_ltn_model(ltn_model, train_loader, epochs=epoch)
+    trained_ltn_net = train_ltn_model(ltn_model, train_loader, epochs=EPOCHS)
     
-    print("\nPipeline Complete! Models trained successfully. Ready for evaluation export.")
+    print("\nTraining complete. Starting evaluation...")
+
+    torch.save(
+        trained_neural_net.state_dict(),
+        "neural_multimodal_model.pth"
+    )
+        
+    torch.save(
+        trained_ltn_net.state_dict(),
+        "ltn_multimodal_model.pth"
+    )
+
+    print("\nModels saved successfully.")
 
     neural_metrics = evaluate_model(
         trained_neural_net,
@@ -577,17 +542,6 @@ if __name__ == "__main__":
         val_loader,
         target_cols,
         target_scaler
-    )
-
-    best_target = max(
-        target_cols,
-        key=lambda x: ltn_metrics[x]["R2"]
-    )
-
-    print(
-        f"\nBest target according to LTN model: "
-        f"{best_target} "
-        f"(R² = {ltn_metrics[best_target]['R2']:.4f})"
     )
 
     print("\n")
@@ -613,14 +567,24 @@ if __name__ == "__main__":
             f"{ltn_metrics[target]['R2']:<15.4f}"
         )
 
-    torch.save(
-        trained_neural_net.state_dict(),
-        "neural_multimodal_model.pth"
-    )
-        
-    torch.save(
-        trained_ltn_net.state_dict(),
-        "ltn_multimodal_model.pth"
+    avg_neural_r2 = np.mean(
+        [neural_metrics[t]["R2"] for t in target_cols]
     )
 
-    print("\nModels saved successfully.")
+    avg_ltn_r2 = np.mean(
+        [ltn_metrics[t]["R2"] for t in target_cols]
+    )
+
+    print("\n" + "=" * 60)
+    print("OVERALL PERFORMANCE")
+    print("=" * 60)
+
+    print(f"Average Neural R² : {avg_neural_r2:.4f}")
+    print(f"Average LTN R²    : {avg_ltn_r2:.4f}")
+    
+    if avg_ltn_r2 > avg_neural_r2:
+        print("\nLTN outperformed the Neural baseline.")
+    else:
+        print("\nNeural baseline outperformed the LTN model.")
+
+    
