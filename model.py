@@ -32,33 +32,76 @@ if torch.cuda.is_available():
 # 1. DATA PREPROCESSING & DATASET
 # ==========================================
 def load_and_preprocess_data(csv_path):
-    # Read the raw CSV file
-    df_raw = pd.read_csv(csv_path)
-    
-    # Define columns that act as constants/metadata for a single image sample
-    metadata_cols = ['image_path', 'Sampling_Date', 'State', 'Species', 'Pre_GSHH_NDVI', 'Height_Ave_cm']
-    
-    # Pivot the table so that the 5 distinct targets become 5 individual columns
-    df = df_raw.pivot(index=metadata_cols, columns='target_name', values='target').reset_index()
-    
-    # Dynamically extract your new target column names
-    target_cols = ['Dry_Clover_g', 'Dry_Dead_g', 'Dry_Green_g', 'Dry_Total_g', 'GDM_g']
-    
-    # One-hot encode the categorical text columns ('State' and 'Species')
-    df = pd.get_dummies(df, columns=['State', 'Species'], drop_first=False)
-    
-    # Identify numerical feature columns to scale
-    feature_cols = ['Pre_GSHH_NDVI', 'Height_Ave_cm'] + [col for col in df.columns if 'State_' in col or 'Species_' in col]
-    
-    # Scale tabular features to [0, 1] for stable LTN processing
-    scaler = MinMaxScaler()
-    df[['Pre_GSHH_NDVI', 'Height_Ave_cm']] = scaler.fit_transform(df[['Pre_GSHH_NDVI', 'Height_Ave_cm']].astype('float32'))
-    
-    # Scale targets to [0, 1] so they act as continuous fuzzy predicates
-    target_scaler = MinMaxScaler()
-    df[target_cols] = target_scaler.fit_transform(df[target_cols].astype('float32'))
+    """Load, preprocess, and scale pasture biomass dataset."""
 
-    return df, feature_cols, target_cols, scaler, target_scaler
+    # Load dataset
+    df_raw = pd.read_csv(csv_path)
+
+    # Columns defining a unique sample
+    metadata_cols = [
+        "image_path",
+        "Sampling_Date",
+        "State",
+        "Species",
+        "Pre_GSHH_NDVI",
+        "Height_Ave_cm"
+    ]
+
+    # Convert long-format targets into separate columns
+    df = (
+        df_raw
+        .pivot(
+            index=metadata_cols,
+            columns="target_name",
+            values="target"
+        )
+        .reset_index()
+    )
+
+    # Biomass targets
+    target_cols = [
+        "Dry_Clover_g",
+        "Dry_Dead_g",
+        "Dry_Green_g",
+        "Dry_Total_g",
+        "GDM_g"
+    ]
+
+    # One-hot encode categorical variables
+    df = pd.get_dummies(
+        df,
+        columns=["State", "Species"],
+        drop_first=False
+    )
+
+    # Tabular input features
+    feature_cols = [
+        "Pre_GSHH_NDVI",
+        "Height_Ave_cm"
+    ] + [
+        col for col in df.columns
+        if col.startswith("State_") or col.startswith("Species_")
+    ]
+
+    # Scale numerical features
+    feature_scaler = MinMaxScaler()
+    df[["Pre_GSHH_NDVI", "Height_Ave_cm"]] = feature_scaler.fit_transform(
+        df[["Pre_GSHH_NDVI", "Height_Ave_cm"]].astype("float32")
+    )
+
+    # Scale targets
+    target_scaler = MinMaxScaler()
+    df[target_cols] = target_scaler.fit_transform(
+        df[target_cols].astype("float32")
+    )
+
+    return (
+        df,
+        feature_cols,
+        target_cols,
+        feature_scaler,
+        target_scaler
+    )
 
 class MultiModalPastureDataset(Dataset):
     def __init__(self, df, feature_cols, target_cols, img_dir, transform=None):
