@@ -117,15 +117,15 @@ class MultiModalPastureDataset(Dataset):
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         
-        # 1. Standardize path from the CSV record
+        # Standardize path from the CSV record
         raw_path = str(row['image_path']).strip().replace('\r', '').replace('\n', '')
         clean_path = raw_path.replace('/', os.sep).replace('\\', os.sep)
         
-        # 2. Extract ONLY the raw digits for comparison
+        # Extract ONLY the raw digits for comparison
         # This turns 'train/ID8209776.jpg' -> '8209776'
         digits_only = ''.join(filter(str.isdigit, os.path.basename(clean_path)))
         
-        # 3. If exact path fails, find the file containing those unique digits
+        # If exact path fails, find the file containing those unique digits
         if not os.path.exists(clean_path) and digits_only:
             train_dir = 'train'
             if os.path.exists(train_dir):
@@ -135,13 +135,13 @@ class MultiModalPastureDataset(Dataset):
                         clean_path = os.path.join(train_dir, actual_file)
                         break
         
-        # 4. Final Fallback if a file is genuinely entirely absent from the drive
+        # Final Fallback if a file is genuinely entirely absent from the drive
         if not os.path.exists(clean_path):
             image = Image.new('RGB', (224, 224), color=(34, 139, 34))
         else:
             image = Image.open(clean_path).convert('RGB')
         
-        # 5. Transformations and Tensor Extraction
+        # Transformations and Tensor Extraction
         if self.transform:
             image = self.transform(image)
             
